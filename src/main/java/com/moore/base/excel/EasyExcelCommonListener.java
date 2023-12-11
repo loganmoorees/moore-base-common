@@ -3,8 +3,7 @@ package com.moore.base.excel;
 import com.alibaba.excel.annotation.ExcelProperty;
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.event.AnalysisEventListener;
-import com.alibaba.excel.metadata.Cell;
-import com.alibaba.excel.metadata.data.WriteCellData;
+import com.alibaba.excel.exception.ExcelDataConvertException;
 import com.alibaba.excel.read.metadata.holder.ReadRowHolder;
 import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Lists;
@@ -13,14 +12,10 @@ import com.moore.base.annotations.ExcelNotBlank;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
 
-import java.beans.IntrospectionException;
-import java.beans.PropertyDescriptor;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 /**
  * easy excel listener
@@ -31,114 +26,111 @@ import java.util.*;
 @Slf4j
 public class EasyExcelCommonListener<T> extends AnalysisEventListener<T> {
 
+    private final int batchCount;
+    private final ImportComponent<T> importService;
+    private final List<T> list = Lists.newArrayList();
+    private final List<String> failList = Lists.newArrayList();
 
-    public int size = 0;
-    public Object[] params;
-    public List<T> list = new ArrayList<>();
-    public List<Map<String, Cell>> errorRowList = Lists.newArrayList();
-    public List<String> failList = Collections.synchronizedList(new ArrayList<>());
-
-    private int indexSize;
-    private int batchCount = 1000;
-    private boolean initSizeFlag = true;
-    private ImportComponent<T> importService;
-    private List<Map<Integer, Cell>> originalRowList = Lists.newArrayList();
-
-    private EasyExcelCommonListener(int batchCount, ImportComponent<T> importService, Object... params) {
+    private EasyExcelCommonListener(int batchCount, ImportComponent<T> importService) {
         this.importService = importService;
         this.batchCount = batchCount;
-        this.params = params;
     }
 
-    public static <T> EasyExcelCommonListener<T> getInstance(int batchCount, ImportComponent<T> importService, Object... params) {
-        return new EasyExcelCommonListener<T>(batchCount, importService, params);
+    public static <T> EasyExcelCommonListener<T> getInstance(int batchCount, ImportComponent<T> importService) {
+        return new EasyExcelCommonListener<>(batchCount, importService);
     }
 
-    @SneakyThrows
-    @Override
-    public void invoke(T data, AnalysisContext context) {
-        ReadRowHolder readRowHolder = context.readRowHolder();
-        Integer rowIndex = readRowHolder.getRowIndex() + 1;
-
-        validation(data, rowIndex);
-        initMapSize(data);
-        log.info("parse excel get data is: {}", JSON.toJSONString(data));
-        list.add(data);
-
-        cellMap(context);
-
-        if (list.size() >= batchCount) {
-            importService.insertData(this);
-            size += list.size();
-            list.clear();
-            originalRowList.clear();
-        }
+    public static <T> EasyExcelCommonListener<T> getInstance(ImportComponent<T> importService) {
+        return new EasyExcelCommonListener<>(500, importService);
     }
 
     @Override
     public void doAfterAllAnalysed(AnalysisContext analysisContext) {
-        if (list.size() > 0) {
-            importService.insertData(this);
-            size += list.size();
+        if (list.size() == 0) {
+            return;
         }
-
+        importService.insertData(this);
         importService.insertException(this);
         log.info("excel parsing completed");
         list.clear();
     }
 
-    private void validation(T t, Integer rowIndex) throws IntrospectionException, InvocationTargetException, IllegalAccessException {
+    @Override
+    @SneakyThrows
+    public void invoke(T data, AnalysisContext context) {
+        final ReadRowHolder readRowHolder = context.readRowHolder();
+        final Integer rowIndex = readRowHolder.getRowIndex() + 1;
+
+        validation(data, rowIndex);
+
+        log.info("parse excel get data is: {}", JSON.toJSONString(data));
+        list.add(data);
+
+        if (list.size() >= batchCount) {
+            importService.insertData(this);
+            list.clear();
+        }
+    }
+
+    /**
+     * All listeners receive this method when anyone Listener does an error report. If an exception is thrown here, the
+     * entire read will terminate.
+     *
+     * @param exception
+     * @param context
+     * @throws Exception
+     */
+    @Override
+    public void onException(Exception exception, AnalysisContext context) throws Exception {
+        log.error("excel exception, continue parsing the next line: {}", exception.getMessage());
+        if (exception instanceof ExcelDataConvertException) {
+            ExcelDataConvertException excelDataConvertException = (ExcelDataConvertException)exception;
+            String message = String.format("第{%d}行，第{%d}列解析异常", excelDataConvertException.getRowIndex() + 1,
+                    excelDataConvertException.getColumnIndex() + 1);
+            log.error(message);
+            failList.add(message + ": " + exception.getMessage());
+        }
+    }
+
+    /**
+     * Returns the header as a map.Override the current method to receive header data.
+     *
+     * @param headMap   map key: index value: excel header
+     * @param context   context
+     */
+    @Override
+    public void invokeHeadMap(Map<Integer, String> headMap, AnalysisContext context) {
+        importService.checkHeadMap(headMap, context);
+    }
+
+    /**
+     * data validation
+     *
+     * @param t         data
+     * @param rowIndex  row index
+     * @throws IllegalAccessException
+     */
+    private void validation(T t, Integer rowIndex) throws IllegalAccessException {
         Class<?> clazz = t.getClass();
         Field[] fields = clazz.getDeclaredFields();
         for (Field field : fields) {
-            ExcelLength excelLength = field.getAnnotation(ExcelLength.class);
-            ExcelNotBlank excelNotBlank = field.getAnnotation(ExcelNotBlank.class);
-            ExcelProperty excelProperty = field.getAnnotation(ExcelProperty.class);
-            if (excelLength != null || excelNotBlank != null) {
-                PropertyDescriptor pd = new PropertyDescriptor(field.getName(), clazz);
-                Method getMethod = pd.getReadMethod();
-                Object invoke = getMethod.invoke(t);
-                int index = excelProperty.index() + 1;
-                if (invoke instanceof String) {
-                    String str = (String) invoke;
-                    Assert.isTrue(str.length() < excelLength.max() && str.length() >= excelLength.min(), String.format("Excel第{%d}行，第{%d}列数据为:{%s} 超出了长度要求", rowIndex, index, str));
-                } else if (excelNotBlank != null) {
-                    Assert.isTrue(!StringUtils.isEmpty(invoke), String.format("Excel第{%d}行，第{%d}列数据不能为空", rowIndex, index));
-                }
+            if (!field.isAnnotationPresent(ExcelProperty.class)) {
+                return;
             }
-        }
-    }
-
-    private void cellMap(AnalysisContext context) {
-        Map<Integer, Cell> cellMap = context.readRowHolder().getCellMap();
-        Set<Integer> keySet = cellMap.keySet();
-        Integer maxIndex = Collections.max(keySet);
-        if (maxIndex < this.indexSize) {
-            cellMap.put(this.indexSize, new WriteCellData<>());
-        }
-        originalRowList.add(cellMap);
-    }
-
-    private void initMapSize(T t) {
-        if (initSizeFlag) {
-            initSizeFlag = false;
-            int indexSize = 0;
-            Class<?> cls = t.getClass();
-            try {
-                Field excelColumnNum = cls.getDeclaredField("excelColumnNum");
-                Object o = excelColumnNum.get(t);
-                indexSize = Integer.parseInt(o.toString());
-            } catch (NoSuchFieldException | IllegalAccessException e) {
-                Field[] fields = cls.getDeclaredFields();
-                for (Field field : fields) {
-                    ExcelProperty annotation = field.getAnnotation(ExcelProperty.class);
-                    if (annotation != null) {
-                        int index = annotation.index();
-                        indexSize = Math.max(index, indexSize);
-                    }
-                }
+            final int index = field.getAnnotation(ExcelProperty.class).index() + 1;
+            Object obj = field.get(field.getName());
+            if (field.isAnnotationPresent(ExcelNotBlank.class) && obj == null) {
+                throw new IllegalAccessException(String.format("Excel第{%d}行，第{%d}列数据不能为空", rowIndex, index));
             }
-            this.indexSize = indexSize;
+
+            if (field.isAnnotationPresent(ExcelLength.class) && obj != null) {
+                ExcelLength annotation = field.getAnnotation(ExcelLength.class);
+                String value = (String) obj;
+                Assert.state(
+                        value.length() <= annotation.max() && value.length() >= annotation.min(),
+                        String.format("Excel第{%d}行，第{%d}列数据为:{%s} 超出了长度要求", rowIndex, index, value)
+                );
+            }
         }
     }
 }

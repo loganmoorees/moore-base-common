@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 public final class BeanUtil {
 
     /**
-     * source 转 target
+     * source to target
      *
      * @param source    object
      * @param targetCls class
@@ -41,17 +41,27 @@ public final class BeanUtil {
     }
 
     /**
-     * source List 转 target List
+     * source List to target List
+     *
+     * @param sourceList    source list
+     * @param target        target class
+     * @param <R>           target object
+     * @return              target list
      */
     public static <R> List<R> copyList(List<?> sourceList, Class<R> target) {
         return sourceList.stream().map(source -> copy(source, target)).collect(Collectors.toList());
     }
 
     /**
-     * MybatisPlus分页类型转换
+     * MybatisPlus page copy
+     *
+     * @param sourceList    list
+     * @param target        target class
+     * @param <R>           param
+     * @return              page object
      */
-    public static <R> IPage<R> copyPage(IPage<?> sourceList, Class<R> target) {
-        IPage<R> iPage = new Page<>();
+    public static <R> Page<R> copyPage(IPage<?> sourceList, Class<R> target) {
+        Page<R> iPage = new Page<>();
         BeanUtils.copyProperties(sourceList, iPage);
         return iPage.setRecords(copyList(sourceList.getRecords(), target));
     }

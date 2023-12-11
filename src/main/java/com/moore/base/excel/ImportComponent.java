@@ -1,6 +1,8 @@
 package com.moore.base.excel;
 
-import java.util.List;
+import com.alibaba.excel.context.AnalysisContext;
+
+import java.util.Map;
 
 /**
  * add data
@@ -9,7 +11,25 @@ import java.util.List;
  */
 public interface ImportComponent<E> {
 
+    /**
+     * data handle
+     *
+     * @param list  data
+     */
     void insertData(EasyExcelCommonListener<E> list);
 
-    void insertException(EasyExcelCommonListener<E> listener);
+    /**
+     * exception data handle
+     *
+     * @param listener  listener
+     */
+    default void insertException(EasyExcelCommonListener<E> listener) {};
+
+    /**
+     * excel header check
+     *
+     * @param headMap   map key: index value: excel header
+     * @param context   context
+     */
+    default void checkHeadMap(Map<Integer, String> headMap, AnalysisContext context) {};
 }
